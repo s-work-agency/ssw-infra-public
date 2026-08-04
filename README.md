@@ -21,61 +21,31 @@
 
 ```mermaid
 flowchart TB
-    subgraph Client["소비자"]
-        PROD["제품 백엔드 · 제품 클라이언트"]
-        ADMIN["admin-web<br/>통합 관리 콘솔"]
-    end
+    CLIENT["<b>소비자</b><br/>제품 백엔드 · 제품 클라이언트 · admin-web(관리 콘솔)"]
+    EDGE["<b>엣지</b><br/>CDN · TLS 종단 · 아웃바운드 터널"]
+    GW["<b>gateway-server — 단일 진입점</b><br/>JWT 검증 · 레이트리밋 · CORS · 추적 ID"]
+    SVC["<b>도메인 서비스 6</b><br/>auth · file · media · notification · chat · analytics"]
+    PLAT["<b>플랫폼 · 관측성 5</b><br/>config · logging · monitoring · tracing · scheduler"]
+    DATA["<b>데이터 · 메시징</b><br/>MariaDB(서비스별 논리 DB) · Valkey · Apache Kafka(+DLT)"]
 
-    subgraph Edge["엣지"]
-        CDN["CDN · TLS 종단 · 터널"]
-    end
-
-    GW["gateway-server<br/>단일 진입점 · JWT 검증 · 레이트리밋 · CORS · 추적 ID"]
-
-    subgraph Services["도메인 서비스"]
-        AUTH["auth-server"]
-        FILE["file-server"]
-        MEDIA["media-server"]
-        NOTI["notification-server"]
-        CHAT["chat-server"]
-        ANLT["analytics-server"]
-    end
-
-    subgraph Platform["플랫폼 · 관측성"]
-        CONF["config-server"]
-        LOG["logging-server"]
-        MON["monitoring-server"]
-        TRC["tracing-server"]
-        SCHED["scheduler-server"]
-    end
-
-    subgraph Data["데이터 · 메시징"]
-        DB[("MariaDB<br/>서비스별 논리 DB")]
-        CACHE[("Valkey<br/>캐시 · 레이트리밋")]
-        BUS[["Apache Kafka<br/>이벤트 백본 · DLT"]]
-    end
-
-    PROD --> CDN
-    ADMIN --> CDN
-    CDN --> GW
-    GW --> Services
-    GW --> Platform
-
-    Services --> DB
-    Platform --> DB
-    GW --> CACHE
-
-    FILE -.->|"file.uploaded"| BUS
-    BUS -.->|"구독"| MEDIA
-    MEDIA -.->|"media.processed"| BUS
-    CHAT -.->|"notify.request"| BUS
-    BUS -.->|"구독"| NOTI
-    Services -.->|"log.entry"| BUS
-    BUS -.->|"구독"| LOG
+    CLIENT --> EDGE --> GW
+    GW --> SVC
+    GW --> PLAT
+    SVC --> DATA
+    PLAT --> DATA
 ```
 
-실선은 동기 HTTP/WebSocket, 점선은 비동기 이벤트입니다. **외부에서 들어오는 트래픽은 예외 없이
-gateway 한 곳을 지나고**, 나머지 서비스와 데이터 계층은 클러스터 내부에만 존재합니다.
+**외부에서 들어오는 트래픽은 예외 없이 gateway 한 곳을 지나고**, 나머지 서비스와 데이터 계층은
+클러스터 내부에만 존재합니다. 서비스 사이의 부수 흐름은 Kafka 이벤트로 흐릅니다:
+
+| 이벤트 토픽 | 발행 | 구독 | 용도 |
+|---|---|---|---|
+| `file.uploaded` | file-server | media-server | 업로드된 이미지의 파생본(썸네일·WebP) 생성 트리거 |
+| `media.processed` | media-server | file-server | 파생본 매핑 저장 — 소비자가 조회할 정식 경로 확보 |
+| `notify.request` | 각 서비스 | notification-server | 이메일·웹푸시·웹훅 발송 위임 |
+| `log.entry` | 전 서비스 | logging-server | 중앙 로그 적재 (fire-and-forget) |
+
+모든 토픽은 1:1 DLT를 두고, 발행은 아웃박스 패턴으로 브로커 부재에도 유실되지 않습니다.
 
 ---
 
